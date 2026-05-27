@@ -824,18 +824,35 @@ Examples:
     return parser.parse_args()
 
 
+def _export_env_file_to_environ(env_file: Path) -> None:
+    """Read KEY=VALUE lines from env_file into os.environ so the agent's
+    load_credentials() (which gives env vars top priority) finds them
+    without re-prompting. Existing env vars win — we don't overwrite."""
+    for line in env_file.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key, val = key.strip(), val.strip()
+        if key and val and key not in os.environ:
+            os.environ[key] = val
+
+
 def _ensure_credentials() -> None:
     """If ~/.circuit-agent/.env is missing, prompt for it interactively.
 
     Called at agent startup so the install command can be cred-free and
     users only enter their Cisco values once, on first run. Resolves the
     config dir the same way proxy.py does: $CIRCUIT_AGENT_HOME first,
-    then ~/.circuit-agent.
+    then ~/.circuit-agent. After ensuring the file exists, loads its
+    contents into os.environ so the agent's load_credentials() doesn't
+    re-prompt from its own (separate) keyring/config-file storage path.
     """
     config_dir = Path(os.environ.get("CIRCUIT_AGENT_HOME") or (Path.home() / ".circuit-agent"))
     env_file = config_dir / ".env"
 
     if env_file.exists():
+        _export_env_file_to_environ(env_file)
         return
 
     print()
@@ -877,6 +894,8 @@ def _ensure_credentials() -> None:
 
     print(f"    Wrote {env_file}")
     print()
+
+    _export_env_file_to_environ(env_file)
 
 
 def _ensure_proxy_running(timeout: float = 8.0) -> None:
