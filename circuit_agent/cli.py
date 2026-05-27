@@ -269,17 +269,27 @@ async def run_cli(working_dir: Optional[str] = None):
         await agent.get_token()
         print_success("Authentication successful!")
 
+        # Persist creds to ~/.circuit-agent/.env so circuit-proxy can use them,
+        # then auto-spawn the proxy in the background. This happens every run
+        # (it's idempotent — write is cheap, _ensure_proxy_running short-circuits
+        # if /health already answers), so the proxy stays in sync with whatever
+        # creds the agent just validated.
+        env_file = write_env_file(client_id, client_secret, app_key)
+        if needs_save_prompt:
+            print_success(f"Credentials saved to {env_file}")
+        _ensure_proxy_running()
+
         if needs_save_prompt:
             save_response = (
-                input(f"\n  {C.CYAN}Save credentials for future sessions? [Y/n]:{C.RESET} ")
+                input(f"\n  {C.CYAN}Also store in system keyring/config file? [y/N]:{C.RESET} ")
                 .strip()
                 .lower()
             )
-            if save_response in ("", "y", "yes"):
+            if save_response in ("y", "yes"):
                 if save_credentials(client_id, client_secret, app_key):
                     print_success(f"Credentials saved to {CONFIG_FILE}")
                 else:
-                    print_warning("Could not save credentials")
+                    print_warning("Could not save to keyring/config file")
 
     except Exception as e:
         print_error(f"Authentication failed: {e}")
@@ -824,78 +834,58 @@ Examples:
     return parser.parse_args()
 
 
-def _export_env_file_to_environ(env_file: Path) -> None:
-    """Read KEY=VALUE lines from env_file into os.environ so the agent's
-    load_credentials() (which gives env vars top priority) finds them
-    without re-prompting. Existing env vars win — we don't overwrite."""
-    for line in env_file.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, val = line.partition("=")
-        key, val = key.strip(), val.strip()
-        if key and val and key not in os.environ:
-            os.environ[key] = val
-
-
-def _ensure_credentials() -> None:
-    """If ~/.circuit-agent/.env is missing, prompt for it interactively.
-
-    Called at agent startup so the install command can be cred-free and
-    users only enter their Cisco values once, on first run. Resolves the
-    config dir the same way proxy.py does: $CIRCUIT_AGENT_HOME first,
-    then ~/.circuit-agent. After ensuring the file exists, loads its
-    contents into os.environ so the agent's load_credentials() doesn't
-    re-prompt from its own (separate) keyring/config-file storage path.
-    """
+def _env_file_path() -> Path:
     config_dir = Path(os.environ.get("CIRCUIT_AGENT_HOME") or (Path.home() / ".circuit-agent"))
-    env_file = config_dir / ".env"
+    return config_dir / ".env"
 
-    if env_file.exists():
-        _export_env_file_to_environ(env_file)
+
+def _load_env_file_silently() -> None:
+    """If ~/.circuit-agent/.env exists, bridge it into os.environ.
+
+    Called at agent startup so returning users don't re-prompt. Silent
+    on miss — no prints, no errors. The in-TUI flow handles first-run
+    credential collection. Existing env vars are not overwritten.
+    """
+    env_file = _env_file_path()
+    if not env_file.exists():
         return
-
-    print()
-    print("==> First run — enter your Cisco CIRCUIT credentials")
-    print("    Get them from your Cisco AI portal. They are stored locally only.")
-    print(f"    Will be saved to: {env_file}")
-    print()
-
     try:
-        cid = input("    API Key (CIRCUIT_CLIENT_ID): ").strip()
-        secret = getpass("    Secret  (CIRCUIT_CLIENT_SECRET): ").strip()
-        app_key = getpass("    KeyPass (CIRCUIT_APP_KEY): ").strip()
-    except (EOFError, KeyboardInterrupt):
-        print("\nAborted. Re-run circuit-agent to try again.", file=sys.stderr)
-        sys.exit(130)
+        for line in env_file.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key, val = key.strip(), val.strip()
+            if key and val and key not in os.environ:
+                os.environ[key] = val
+    except OSError:
+        pass
 
-    if not cid or not secret or not app_key:
-        print("Error: all three values are required.", file=sys.stderr)
-        sys.exit(1)
 
+def write_env_file(client_id: str, client_secret: str, app_key: str, model: str = "gpt-5-nano") -> Path:
+    """Persist Cisco credentials to ~/.circuit-agent/.env so circuit-proxy
+    (and any other tool pointing at it) can find them. Called from the
+    in-TUI credential flow after agent.get_token() validates the values."""
+    env_file = _env_file_path()
+    config_dir = env_file.parent
     config_dir.mkdir(parents=True, exist_ok=True)
     try:
         os.chmod(config_dir, 0o700)
     except (OSError, NotImplementedError):
-        pass  # Windows / unsupported FS
-
+        pass
     body = (
         "# Cisco CIRCUIT API credentials — keep this file private\n"
-        f"CIRCUIT_CLIENT_ID={cid}\n"
-        f"CIRCUIT_CLIENT_SECRET={secret}\n"
+        f"CIRCUIT_CLIENT_ID={client_id}\n"
+        f"CIRCUIT_CLIENT_SECRET={client_secret}\n"
         f"CIRCUIT_APP_KEY={app_key}\n"
-        "CIRCUIT_MODEL=gpt-5-nano\n"
+        f"CIRCUIT_MODEL={model}\n"
     )
     env_file.write_text(body)
     try:
         os.chmod(env_file, 0o600)
     except (OSError, NotImplementedError):
         pass
-
-    print(f"    Wrote {env_file}")
-    print()
-
-    _export_env_file_to_environ(env_file)
+    return env_file
 
 
 def _ensure_proxy_running(timeout: float = 8.0) -> None:
@@ -977,8 +967,7 @@ def main():
         print(f"Circuit Agent v{__version__}")
         return
 
-    _ensure_credentials()
-    _ensure_proxy_running()
+    _load_env_file_silently()
 
     # Determine working directory
     working_dir = args.directory or os.getcwd()
