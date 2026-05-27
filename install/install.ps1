@@ -118,17 +118,28 @@ CIRCUIT_MODEL=gpt-5-nano
     }
 }
 
+# --- add venv Scripts to user PATH -----------------------------------------
+$ScriptsDir = Join-Path $VenvDir 'Scripts'
+$UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+if ($UserPath -and ($UserPath.Split(';') -contains $ScriptsDir)) {
+    Write-Host "==> $ScriptsDir already on user PATH"
+} else {
+    $NewPath = if ($UserPath) { "$UserPath;$ScriptsDir" } else { $ScriptsDir }
+    [Environment]::SetEnvironmentVariable("Path", $NewPath, "User")
+    Write-Host "==> Added $ScriptsDir to your user PATH"
+    Write-Host "    (Open a NEW PowerShell window for it to take effect.)"
+}
+
 # --- done -------------------------------------------------------------------
-$AgentExe = Join-Path $VenvDir 'Scripts\circuit-agent.exe'
-$ProxyExe = Join-Path $VenvDir 'Scripts\circuit-proxy.exe'
+$AgentExe = Join-Path $ScriptsDir 'circuit-agent.exe'
 
 Write-Host ""
 Write-Host "==> Installation complete."
 Write-Host ""
-Write-Host "    Start the proxy (one terminal):  $ProxyExe"
-Write-Host "    Run the agent  (another):        $AgentExe"
-Write-Host ""
-Write-Host "    Or activate the venv first:"
-Write-Host "        $VenvDir\Scripts\Activate.ps1"
-Write-Host "        circuit-proxy"
+Write-Host "    Open a NEW PowerShell window, then just run:"
 Write-Host "        circuit-agent"
+Write-Host ""
+Write-Host "    (The agent auto-spawns circuit-proxy in the background.)"
+Write-Host ""
+Write-Host "    To run in this shell without reopening:"
+Write-Host "        & '$AgentExe'"
