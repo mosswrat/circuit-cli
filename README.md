@@ -15,37 +15,48 @@ Each user supplies their **own** Cisco credentials. Nothing is shared across mac
 
 ## Install
 
-After cloning this folder onto the target machine, run the command for your OS from inside it.
+One command. No clone required.
 
 ### Linux / macOS
 
 ```bash
-./install/install.sh
+curl -fsSL https://raw.githubusercontent.com/mosswrat/circuit-cli/main/install/web-install.sh | bash
 ```
 
 ### Windows (PowerShell)
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\install\install.ps1
+irm https://raw.githubusercontent.com/mosswrat/circuit-cli/main/install/web-install.ps1 | iex
 ```
 
 The installer will:
 
 1. Find a Python ≥ 3.10 on the system (errors out with a download link if not present).
 2. Create an isolated venv at `~/.circuit-agent/venv` (or `%USERPROFILE%\.circuit-agent\venv` on Windows).
-3. `pip install` the `circuit-agent` package and its dependencies.
-4. Prompt you for the three Cisco CIRCUIT credentials and save them to `~/.circuit-agent/.env`:
+3. `pip install` the package directly from this GitHub repo.
+4. Make `circuit-agent` available on PATH — symlinks into `~/.local/bin` on Unix, appends to user PATH on Windows.
+
+Credentials are **not** prompted during install. The first time you run `circuit-agent`, it will ask:
 
 ```
-==> Enter your Cisco CIRCUIT credentials
+==> First run — enter your Cisco CIRCUIT credentials
     API Key (CIRCUIT_CLIENT_ID): _
     Secret  (CIRCUIT_CLIENT_SECRET): _   (hidden input)
     KeyPass (CIRCUIT_APP_KEY): _         (hidden input)
 ```
 
-The file is created with `0600` permissions on Unix and an ACL-restricted to the current user on Windows.
+The file is created with `0600` permissions on Unix and lives at `~/.circuit-agent/.env`.
 
-5. On Linux/macOS, symlink `circuit-agent` and `circuit-proxy` into `~/.local/bin`. (The installer warns if that's not on your `PATH`.)
+### Alternative: install from a local clone
+
+If you'd rather inspect the code before installing, clone the repo and run the bundled script:
+
+```bash
+git clone https://github.com/mosswrat/circuit-cli && cd circuit-cli
+./install/install.sh                                       # Linux / macOS
+# or:
+powershell -ExecutionPolicy Bypass -File .\install\install.ps1   # Windows
+```
 
 ---
 
