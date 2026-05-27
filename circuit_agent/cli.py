@@ -8,7 +8,6 @@ import asyncio
 import json
 import os
 import sys
-from getpass import getpass
 from pathlib import Path
 from typing import Optional
 
@@ -20,8 +19,8 @@ from .config import (
     get_circuit_md_locations,
     get_config_summary,
     load_credentials,
-    save_credentials,
 )
+from prompt_toolkit import prompt as pt_prompt
 from prompt_toolkit.application import Application
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.history import FileHistory
@@ -235,14 +234,10 @@ async def run_cli(working_dir: Optional[str] = None):
 
     # Load credentials
     client_id, client_secret, app_key = load_credentials()
-    credentials_from_config = os.path.exists(CONFIG_FILE)
-    needs_save_prompt = False
+    is_first_run = False
 
     if client_id and client_secret and app_key:
-        if credentials_from_config:
-            print_success(f"Using saved credentials from {CONFIG_FILE}")
-        else:
-            print_success("Using credentials from environment variables")
+        print_success("Using saved credentials")
     else:
         print(f"""{C.BOLD}Enter your Cisco Circuit credentials:{C.RESET}
 
@@ -252,10 +247,10 @@ async def run_cli(working_dir: Optional[str] = None):
         if not client_id:
             client_id = input(f"  {C.CYAN}Client ID:{C.RESET} ").strip()
         if not client_secret:
-            client_secret = getpass(f"  {C.CYAN}Client Secret:{C.RESET} ").strip()
+            client_secret = pt_prompt(f"  Client Secret: ", is_password=True).strip()
         if not app_key:
             app_key = input(f"  {C.CYAN}App Key:{C.RESET} ").strip()
-        needs_save_prompt = True
+        is_first_run = True
 
     if not all([client_id, client_secret, app_key]):
         print_error("All credentials are required")
@@ -269,27 +264,12 @@ async def run_cli(working_dir: Optional[str] = None):
         await agent.get_token()
         print_success("Authentication successful!")
 
-        # Persist creds to ~/.circuit-agent/.env so circuit-proxy can use them,
-        # then auto-spawn the proxy in the background. This happens every run
-        # (it's idempotent — write is cheap, _ensure_proxy_running short-circuits
-        # if /health already answers), so the proxy stays in sync with whatever
-        # creds the agent just validated.
+        # Persist creds to ~/.circuit-agent/.env (the canonical store) and
+        # auto-spawn the proxy in the background. Idempotent on both fronts.
         env_file = write_env_file(client_id, client_secret, app_key)
-        if needs_save_prompt:
+        if is_first_run:
             print_success(f"Credentials saved to {env_file}")
         _ensure_proxy_running()
-
-        if needs_save_prompt:
-            save_response = (
-                input(f"\n  {C.CYAN}Also store in system keyring/config file? [y/N]:{C.RESET} ")
-                .strip()
-                .lower()
-            )
-            if save_response in ("y", "yes"):
-                if save_credentials(client_id, client_secret, app_key):
-                    print_success(f"Credentials saved to {CONFIG_FILE}")
-                else:
-                    print_warning("Could not save to keyring/config file")
 
     except Exception as e:
         print_error(f"Authentication failed: {e}")
