@@ -30,17 +30,29 @@ $Candidates = @(
     @{ Exe='python';  Args=@() }
 )
 foreach ($c in $Candidates) {
-    if (Get-Command $c.Exe -ErrorAction SilentlyContinue) {
+    if (-not (Get-Command $c.Exe -ErrorAction SilentlyContinue)) { continue }
+    try {
         $verCheck = & $c.Exe @($c.Args + @('-c', 'import sys; print(int(sys.version_info >= (3,10)))')) 2>$null
-        if ($verCheck -eq '1') {
-            $PyExe = $c.Exe
-            $PyArgs = $c.Args
-            break
-        }
+    } catch {
+        continue   # candidate exists but failed (e.g. py.exe with no Python installed)
+    }
+    if ($LASTEXITCODE -eq 0 -and $verCheck -eq '1') {
+        $PyExe = $c.Exe
+        $PyArgs = $c.Args
+        break
     }
 }
 if (-not $PyExe) {
-    Write-Error "Python 3.10+ not found. Install from https://www.python.org/downloads/ and ensure 'Add to PATH' is checked."
+    Write-Host ""
+    Write-Host "ERROR: No working Python 3.10+ found." -ForegroundColor Red
+    Write-Host ""
+    Write-Host "The Python launcher 'py.exe' may be present but no Python interpreter is registered with it." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Fix:" -ForegroundColor Yellow
+    Write-Host "  1. Download Python 3.12 (64-bit) from https://www.python.org/downloads/windows/"
+    Write-Host "  2. During install, check 'Add python.exe to PATH'"
+    Write-Host "  3. Open a NEW PowerShell window, verify with:  python --version"
+    Write-Host "  4. Re-run this installer."
     exit 1
 }
 $PyVer = & $PyExe @($PyArgs + @('--version'))
