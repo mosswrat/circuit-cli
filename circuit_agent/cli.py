@@ -824,6 +824,61 @@ Examples:
     return parser.parse_args()
 
 
+def _ensure_credentials() -> None:
+    """If ~/.circuit-agent/.env is missing, prompt for it interactively.
+
+    Called at agent startup so the install command can be cred-free and
+    users only enter their Cisco values once, on first run. Resolves the
+    config dir the same way proxy.py does: $CIRCUIT_AGENT_HOME first,
+    then ~/.circuit-agent.
+    """
+    config_dir = Path(os.environ.get("CIRCUIT_AGENT_HOME") or (Path.home() / ".circuit-agent"))
+    env_file = config_dir / ".env"
+
+    if env_file.exists():
+        return
+
+    print()
+    print("==> First run — enter your Cisco CIRCUIT credentials")
+    print("    Get them from your Cisco AI portal. They are stored locally only.")
+    print(f"    Will be saved to: {env_file}")
+    print()
+
+    try:
+        cid = input("    API Key (CIRCUIT_CLIENT_ID): ").strip()
+        secret = getpass("    Secret  (CIRCUIT_CLIENT_SECRET): ").strip()
+        app_key = getpass("    KeyPass (CIRCUIT_APP_KEY): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\nAborted. Re-run circuit-agent to try again.", file=sys.stderr)
+        sys.exit(130)
+
+    if not cid or not secret or not app_key:
+        print("Error: all three values are required.", file=sys.stderr)
+        sys.exit(1)
+
+    config_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(config_dir, 0o700)
+    except (OSError, NotImplementedError):
+        pass  # Windows / unsupported FS
+
+    body = (
+        "# Cisco CIRCUIT API credentials — keep this file private\n"
+        f"CIRCUIT_CLIENT_ID={cid}\n"
+        f"CIRCUIT_CLIENT_SECRET={secret}\n"
+        f"CIRCUIT_APP_KEY={app_key}\n"
+        "CIRCUIT_MODEL=gpt-5-nano\n"
+    )
+    env_file.write_text(body)
+    try:
+        os.chmod(env_file, 0o600)
+    except (OSError, NotImplementedError):
+        pass
+
+    print(f"    Wrote {env_file}")
+    print()
+
+
 def _ensure_proxy_running(timeout: float = 8.0) -> None:
     """Make sure circuit-proxy is reachable on the configured host:port.
 
@@ -903,6 +958,7 @@ def main():
         print(f"Circuit Agent v{__version__}")
         return
 
+    _ensure_credentials()
     _ensure_proxy_running()
 
     # Determine working directory
