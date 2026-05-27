@@ -824,6 +824,74 @@ Examples:
     return parser.parse_args()
 
 
+def _ensure_proxy_running(timeout: float = 8.0) -> None:
+    """Make sure circuit-proxy is reachable on the configured host:port.
+
+    Probes /health first so re-running the agent doesn't double-spawn.
+    If the proxy is down, launches it detached so it outlives this process —
+    that way subsequent agent invocations reuse the same proxy (and its
+    cached OAuth token). Skipped entirely if CIRCUIT_AGENT_AUTO_PROXY=0.
+    """
+    if os.environ.get("CIRCUIT_AGENT_AUTO_PROXY", "1").lower() in ("0", "false", "no"):
+        return
+
+    import socket
+    import subprocess
+    import time
+    import urllib.error
+    import urllib.request
+
+    host = os.environ.get("CIRCUIT_PROXY_HOST", "127.0.0.1")
+    port = int(os.environ.get("CIRCUIT_PROXY_PORT", "8787"))
+    health_url = f"http://{host}:{port}/health"
+
+    def _is_alive() -> bool:
+        try:
+            with urllib.request.urlopen(health_url, timeout=1.0) as resp:
+                return resp.status == 200
+        except (urllib.error.URLError, socket.timeout, ConnectionError, OSError):
+            return False
+
+    if _is_alive():
+        return
+
+    log_dir = Path(os.environ.get("CIRCUIT_AGENT_HOME") or (Path.home() / ".circuit-agent"))
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "proxy.log"
+
+    print(f"Starting circuit-proxy in background (logs: {log_file})...", file=sys.stderr)
+
+    popen_kwargs = {
+        "stdout": open(log_file, "ab"),
+        "stderr": subprocess.STDOUT,
+        "stdin": subprocess.DEVNULL,
+    }
+    if sys.platform == "win32":
+        # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP — survives parent exit, no console window
+        popen_kwargs["creationflags"] = 0x00000008 | 0x00000200
+    else:
+        popen_kwargs["start_new_session"] = True  # detach from agent's process group
+
+    try:
+        subprocess.Popen([sys.executable, "-m", "circuit_agent.proxy"], **popen_kwargs)
+    except Exception as exc:
+        print(f"Warning: failed to spawn circuit-proxy: {exc}", file=sys.stderr)
+        print("Run 'circuit-proxy' manually in another terminal.", file=sys.stderr)
+        return
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _is_alive():
+            return
+        time.sleep(0.3)
+
+    print(
+        f"Warning: circuit-proxy didn't respond on {health_url} within {timeout}s. "
+        f"Check {log_file} or run 'circuit-proxy' manually.",
+        file=sys.stderr,
+    )
+
+
 def main():
     """Entry point for the CLI."""
     args = parse_args()
@@ -834,6 +902,8 @@ def main():
 
         print(f"Circuit Agent v{__version__}")
         return
+
+    _ensure_proxy_running()
 
     # Determine working directory
     working_dir = args.directory or os.getcwd()

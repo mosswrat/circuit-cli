@@ -51,17 +51,13 @@ The file is created with `0600` permissions on Unix and an ACL-restricted to the
 
 ## Run
 
-In two terminals:
+Just one command:
 
 ```bash
-# terminal 1
-circuit-proxy
-
-# terminal 2
 circuit-agent
 ```
 
-That's it.
+The agent auto-spawns `circuit-proxy` in the background on first launch (logs go to `~/.circuit-agent/proxy.log`). Subsequent runs reuse the same proxy. To disable this and manage the proxy yourself, export `CIRCUIT_AGENT_AUTO_PROXY=0` before running the agent, then start `circuit-proxy` in a separate terminal.
 
 ---
 
