@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "circuit-agent"
+version = "5.0.0-alpha"
+description = "Terminal CLI agent + OpenAI-compatible proxy for the Cisco CIRCUIT API"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Circuit Agent Team"}
+]
+keywords = ["ai", "coding-assistant", "cli", "cisco", "circuit"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development",
+]
+
+dependencies = [
+    "httpx>=0.25.0",
+    "pygments>=2.17.0",
+    "certifi>=2023.0.0",       # SSL CA bundle
+    "flask>=3.0.0",            # circuit-proxy HTTP server
+    "requests>=2.31.0",        # circuit-proxy upstream calls
+    "rich>=13.0.0",            # circuit-agent TUI rendering
+    "prompt_toolkit>=3.0.0",   # circuit-agent input + completion menu
+]
+
+[project.optional-dependencies]
+secure = [
+    "keyring>=24.0.0",  # Optional: store credentials in OS keychain instead of .env
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.1.0",
+]
+
+[project.scripts]
+circuit-agent = "circuit_agent.cli:main"
+circuit-proxy = "circuit_agent.proxy:main"
+
+[tool.setuptools.packages.find]
+include = ["circuit_agent*"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
