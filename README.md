@@ -86,10 +86,18 @@ Get them from your Cisco AI portal (`https://developer.cisco.com/site/ai-ml/` â†
 
 ## Uninstall
 
+Run the uninstaller for your OS from inside the cloned repo. It stops any running proxy, removes the PATH entry / symlinks, and deletes the config directory (venv, `.env`, `proxy.log`, token cache).
+
 ```bash
 # Linux / macOS
-rm -rf ~/.circuit-agent ~/.local/bin/circuit-agent ~/.local/bin/circuit-proxy
-
-# Windows (PowerShell)
-Remove-Item -Recurse -Force $env:USERPROFILE\.circuit-agent
+./install/uninstall.sh             # asks for confirmation
+./install/uninstall.sh -y          # skip the confirmation prompt
 ```
+
+```powershell
+# Windows
+powershell -ExecutionPolicy Bypass -File .\install\uninstall.ps1
+powershell -ExecutionPolicy Bypass -File .\install\uninstall.ps1 -Yes   # non-interactive
+```
+
+The cloned repo itself is not touched â€” delete it manually if you don't need it anymore.
