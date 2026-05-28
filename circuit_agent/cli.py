@@ -820,8 +820,56 @@ Examples:
     )
 
     parser.add_argument("--version", "-v", action="store_true", help="Show version and exit")
+    parser.add_argument(
+        "--upgrade",
+        action="store_true",
+        help="Pull the latest circuit-agent from GitHub into this venv, then exit",
+    )
 
     return parser.parse_args()
+
+
+REPO_GIT_URL = "git+https://github.com/mosswrat/circuit-cli.git"
+
+
+def _upgrade_in_place() -> int:
+    """Run `pip install --upgrade --force-reinstall --no-cache-dir` for our
+    package URL inside the venv that's running this Python. Returns the
+    pip exit code. The --no-cache-dir flag is the load-bearing one — pip
+    aggressively reuses cached wheels of git+ URLs even when the underlying
+    commit has changed, so without it `--upgrade` often becomes a no-op."""
+    import subprocess
+
+    venv_bin = Path(sys.executable).parent
+    pip_exe = venv_bin / ("pip.exe" if sys.platform == "win32" else "pip")
+    if not pip_exe.exists():
+        print(f"Error: cannot find pip at {pip_exe}", file=sys.stderr)
+        return 1
+
+    cmd = [
+        str(pip_exe),
+        "install",
+        "--upgrade",
+        "--force-reinstall",
+        "--no-cache-dir",
+        REPO_GIT_URL,
+    ]
+    print(f"Upgrading circuit-agent from {REPO_GIT_URL}")
+    result = subprocess.run(cmd)
+    if result.returncode != 0:
+        print(f"\nUpgrade failed (pip exit {result.returncode}).", file=sys.stderr)
+        return result.returncode
+
+    # Show the new version by invoking the freshly-installed entry point.
+    # We can't `from . import __version__` again — the in-memory module is
+    # stale. Subprocess gets a fresh import.
+    agent_exe = venv_bin / ("circuit-agent.exe" if sys.platform == "win32" else "circuit-agent")
+    try:
+        out = subprocess.check_output([str(agent_exe), "--version"], text=True).strip()
+        print(f"\n==> {out}")
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+    return 0
 
 
 def _env_file_path() -> Path:
@@ -962,6 +1010,9 @@ def main():
 
         print(f"Circuit Agent v{__version__}")
         return
+
+    if args.upgrade:
+        sys.exit(_upgrade_in_place())
 
     _load_env_file_silently()
 

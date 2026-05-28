@@ -85,6 +85,16 @@ Override the config location by exporting `CIRCUIT_AGENT_HOME=/some/path` before
 
 ---
 
+## Upgrade
+
+```bash
+circuit-agent --upgrade
+```
+
+That's it. The agent finds its own venv, runs `pip install --upgrade --force-reinstall --no-cache-dir` for the GitHub URL, prints the new version, and exits. No need to remember pip flags. (`--force-reinstall --no-cache-dir` matter because pip otherwise caches `git+...` URLs aggressively and silently no-ops your upgrade.)
+
+---
+
 ## Where credentials come from
 
 Get them from your Cisco AI portal (`https://developer.cisco.com/site/ai-ml/` → "Manage Circuit API Keys"). You need three values:
