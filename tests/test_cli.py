@@ -402,8 +402,11 @@ class TestUpgradeInPlace:
         fake_run = MagicMock(return_value=MagicMock(returncode=0))
         fake_check_output = MagicMock(return_value="Circuit Agent v5.99.0\n")
 
+        # Patch urlopen too so the post-upgrade /shutdown probe doesn't hit
+        # any real proxy that might be running on this machine.
         with patch("subprocess.run", fake_run), \
-             patch("subprocess.check_output", fake_check_output):
+             patch("subprocess.check_output", fake_check_output), \
+             patch("urllib.request.urlopen"):
             # Act
             rc = _upgrade_in_place()
 
@@ -416,6 +419,70 @@ class TestUpgradeInPlace:
         assert "--force-reinstall" in cmd
         assert "--no-cache-dir" in cmd  # load-bearing — pip caches git+ aggressively
         assert REPO_GIT_URL in cmd
+
+    def test_calls_proxy_shutdown_after_successful_upgrade(self, monkeypatch, tmp_path):
+        from circuit_agent.cli import _upgrade_in_place
+
+        # Arrange — fake venv
+        venv_bin = tmp_path / "venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        for name in ("python", "pip", "circuit-agent"):
+            (venv_bin / name).write_text("")
+        monkeypatch.setattr(sys, "executable", str(venv_bin / "python"))
+
+        with patch("subprocess.run", return_value=MagicMock(returncode=0)), \
+             patch("subprocess.check_output", return_value="Circuit Agent v5.99.0\n"), \
+             patch("urllib.request.urlopen") as mock_urlopen:
+            # Act
+            _upgrade_in_place()
+
+        # Assert — shutdown was attempted with a POST to localhost:8787
+        assert mock_urlopen.called
+        request_arg = mock_urlopen.call_args[0][0]
+        # The first positional arg is a urllib.request.Request
+        assert "127.0.0.1:8787/shutdown" in request_arg.full_url
+        assert request_arg.get_method() == "POST"
+
+    def test_returns_2_when_new_binary_fails_version_check(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        import subprocess as real_subprocess
+        from circuit_agent.cli import _upgrade_in_place
+
+        # Arrange — fake venv, pip succeeds but the new --version call blows up
+        venv_bin = tmp_path / "venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        for name in ("python", "pip", "circuit-agent"):
+            (venv_bin / name).write_text("")
+        monkeypatch.setattr(sys, "executable", str(venv_bin / "python"))
+
+        with patch("subprocess.run", return_value=MagicMock(returncode=0)), \
+             patch(
+                 "subprocess.check_output",
+                 side_effect=real_subprocess.CalledProcessError(127, "circuit-agent"),
+             ), \
+             patch("urllib.request.urlopen"):
+            # Act
+            rc = _upgrade_in_place()
+
+        # Assert
+        assert rc == 2
+        captured = capsys.readouterr()
+        assert "failed to report" in captured.err
+
+    def test_repo_url_respects_env_override(self, monkeypatch):
+        # REPO_GIT_URL is module-level, evaluated at import — need a reload.
+        import importlib
+        import circuit_agent.cli as cli_mod
+
+        monkeypatch.setenv("CIRCUIT_REPO_URL", "git+https://example.com/forked.git")
+        importlib.reload(cli_mod)
+        try:
+            assert cli_mod.REPO_GIT_URL == "git+https://example.com/forked.git"
+        finally:
+            # Restore default for downstream tests in the same session
+            monkeypatch.delenv("CIRCUIT_REPO_URL")
+            importlib.reload(cli_mod)
 
     def test_propagates_nonzero_pip_exit(self, monkeypatch, tmp_path, capsys):
         from circuit_agent.cli import _upgrade_in_place
@@ -435,3 +502,61 @@ class TestUpgradeInPlace:
         assert rc == 42
         captured = capsys.readouterr()
         assert "Upgrade failed" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# __version__ dynamic resolution
+# ---------------------------------------------------------------------------
+
+
+class TestVersionString:
+    def test_version_matches_installed_package_metadata(self):
+        from importlib.metadata import version
+        import circuit_agent
+
+        # The whole point of the 5.1.1 fix: __version__ should never drift
+        # from what pip installed.
+        assert circuit_agent.__version__ == version("circuit-agent")
+
+    def test_version_is_not_the_old_hardcoded_alpha(self):
+        # Regression guard — if __init__.py ever goes back to a hardcoded
+        # literal, this test will catch the drift once pyproject moves on.
+        import circuit_agent
+
+        assert circuit_agent.__version__ != "5.0.0-alpha"
+
+
+# ---------------------------------------------------------------------------
+# write_env_file — atomic write
+# ---------------------------------------------------------------------------
+
+
+class TestAtomicWrite:
+    def test_no_tempfile_left_behind_after_successful_write(
+        self, circuit_home, clean_circuit_env
+    ):
+        # Act
+        write_env_file("cid", "secret", "appkey")
+
+        # Assert — implementation uses tempfile.mkstemp + os.replace; no
+        # stragglers should remain in the parent directory.
+        leftover = list(circuit_home.glob(".env.*.tmp"))
+        assert leftover == [], f"unexpected tempfile leftovers: {leftover}"
+
+    def test_tempfile_cleaned_up_on_write_failure(
+        self, circuit_home, clean_circuit_env, monkeypatch
+    ):
+        # Arrange — make os.replace blow up so the rename phase fails
+        def replace_boom(src, dst):
+            raise OSError("simulated replace failure")
+
+        monkeypatch.setattr(os, "replace", replace_boom)
+
+        # Act — should raise, but tempfile must be cleaned up
+        with pytest.raises(OSError, match="simulated replace failure"):
+            write_env_file("cid", "secret", "appkey")
+
+        # Assert — no leftover tempfile, no .env file
+        leftover = list(circuit_home.glob(".env.*.tmp"))
+        assert leftover == [], f"tempfile not cleaned up: {leftover}"
+        assert not (circuit_home / ".env").exists()

@@ -830,7 +830,9 @@ Examples:
     return parser.parse_args()
 
 
-REPO_GIT_URL = "git+https://github.com/mosswrat/circuit-cli.git"
+REPO_GIT_URL = os.environ.get(
+    "CIRCUIT_REPO_URL", "git+https://github.com/mosswrat/circuit-cli.git"
+)
 
 
 def _upgrade_in_place() -> int:
@@ -861,6 +863,18 @@ def _upgrade_in_place() -> int:
         print(f"\nUpgrade failed (pip exit {result.returncode}).", file=sys.stderr)
         return result.returncode
 
+    # Ask any running proxy to shut down so the next agent run boots a
+    # fresh one carrying the upgraded code. Pre-5.2 proxies don't have
+    # /shutdown — that's fine, the failure is swallowed.
+    try:
+        import urllib.request
+        urllib.request.urlopen(
+            urllib.request.Request("http://127.0.0.1:8787/shutdown", method="POST"),
+            timeout=1.0,
+        )
+    except Exception:
+        pass
+
     # Show the new version by invoking the freshly-installed entry point.
     # We can't `from . import __version__` again — the in-memory module is
     # stale. Subprocess gets a fresh import.
@@ -868,8 +882,16 @@ def _upgrade_in_place() -> int:
     try:
         out = subprocess.check_output([str(agent_exe), "--version"], text=True).strip()
         print(f"\n==> {out}")
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        pass
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        # pip succeeded but the new binary couldn't even report its version.
+        # That's usually a missing dependency or a broken import — surface it
+        # instead of silently claiming success.
+        print(
+            f"\nWarning: upgrade installed, but the new binary failed to "
+            f"report --version: {exc}",
+            file=sys.stderr,
+        )
+        return 2
     return 0
 
 
@@ -907,7 +929,17 @@ def _load_env_file_silently() -> None:
 def write_env_file(client_id: str, client_secret: str, app_key: str, model: str = "gpt-5-nano") -> Path:
     """Persist Cisco credentials to ~/.circuit-agent/.env so circuit-proxy
     (and any other tool pointing at it) can find them. Called from the
-    in-TUI credential flow after agent.get_token() validates the values."""
+    in-TUI credential flow after agent.get_token() validates the values.
+
+    Atomic + correct-perms-from-birth: writes through a tempfile created
+    in the same directory with mkstemp (which on POSIX is 0o600 from the
+    instant the inode exists), then os.replace's it over the target. This
+    closes two bugs: (1) the brief world-readable window between an old
+    write_text + os.chmod, and (2) a half-written .env if the process is
+    killed mid-write.
+    """
+    import tempfile
+
     env_file = _env_file_path()
     config_dir = env_file.parent
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -918,14 +950,15 @@ def write_env_file(client_id: str, client_secret: str, app_key: str, model: str 
         # is surprising. The in-TUI flow lands here every successful auth.
         print(f"note: overwriting existing {env_file}", file=sys.stderr)
 
-    # chmod is a no-op on Windows; skip the call instead of swallowing the
-    # NotImplementedError. On POSIX, an actual failure is security-relevant
-    # (creds left world-readable) and should be visible.
+    # Tighten the parent dir on POSIX so even a less-careful future writer
+    # can't accidentally drop a world-readable file in here. NotImplementedError
+    # is what Windows raises; OSError is the real one we want to surface.
     if sys.platform != "win32":
         try:
             os.chmod(config_dir, 0o700)
         except OSError as exc:
             print(f"Warning: could not set 0o700 on {config_dir}: {exc}", file=sys.stderr)
+
     body = (
         "# Cisco CIRCUIT API credentials — keep this file private\n"
         f"CIRCUIT_CLIENT_ID={client_id}\n"
@@ -933,16 +966,25 @@ def write_env_file(client_id: str, client_secret: str, app_key: str, model: str 
         f"CIRCUIT_APP_KEY={app_key}\n"
         f"CIRCUIT_MODEL={model}\n"
     )
-    env_file.write_text(body)
-    if sys.platform != "win32":
+
+    # mkstemp creates the file with 0o600 on POSIX and an exclusive handle.
+    # os.replace is atomic on both POSIX and Windows. The tmp file lives in
+    # the same dir so the rename can't cross filesystem boundaries.
+    fd, tmp_path = tempfile.mkstemp(dir=str(config_dir), prefix=".env.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(body)
+        os.replace(tmp_path, env_file)
+    except Exception:
         try:
-            os.chmod(env_file, 0o600)
-        except OSError as exc:
-            print(f"Warning: could not set 0o600 on {env_file}: {exc}", file=sys.stderr)
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
     return env_file
 
 
-SPAWN_MARKER_TTL_SECS = 30
+SPAWN_MARKER_TTL_SECS = 10
 
 
 def _ensure_proxy_running() -> None:

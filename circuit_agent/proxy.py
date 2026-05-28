@@ -139,6 +139,19 @@ def health():
     return jsonify({"ok": True})
 
 
+@app.route("/shutdown", methods=["POST"])
+def shutdown():
+    """Ask the proxy to stop. Used by `circuit-agent --upgrade` so the
+    next agent run boots a fresh proxy carrying the upgraded code.
+    Localhost-only access by virtue of the default PROXY_HOST=127.0.0.1
+    binding — no auth token needed."""
+    import threading
+
+    # Defer the exit so this response can flush back to the caller first.
+    threading.Timer(0.1, lambda: os._exit(0)).start()
+    return jsonify({"shutting_down": True}), 200
+
+
 def main() -> None:
     _load_env()
     sys.stderr.write(
