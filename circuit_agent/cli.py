@@ -254,7 +254,12 @@ async def run_cli(working_dir: Optional[str] = None):
                 await secret_session.prompt_async("  Client Secret: ", is_password=True)
             ).strip()
         if not app_key:
-            app_key = input(f"  {C.CYAN}App Key:{C.RESET} ").strip()
+            # Same asyncio-loop reasoning as Client Secret above; mask so the
+            # key doesn't end up in shell scrollback.
+            app_key_session = PromptSession()
+            app_key = (
+                await app_key_session.prompt_async("  App Key: ", is_password=True)
+            ).strip()
         is_first_run = True
 
     if not all([client_id, client_secret, app_key]):
@@ -843,8 +848,11 @@ def _load_env_file_silently() -> None:
             key, val = key.strip(), val.strip()
             if key and val and key not in os.environ:
                 os.environ[key] = val
-    except OSError:
-        pass
+    except OSError as exc:
+        # File exists but is unreadable (perms, I/O error, etc.) — surface
+        # it so the user knows why their saved creds aren't loading. The
+        # missing-file case is handled by the early-return above.
+        print(f"Warning: could not read {env_file}: {exc}", file=sys.stderr)
 
 
 def write_env_file(client_id: str, client_secret: str, app_key: str, model: str = "gpt-5-nano") -> Path:
@@ -910,8 +918,9 @@ def _ensure_proxy_running(timeout: float = 8.0) -> None:
 
     print(f"Starting circuit-proxy in background (logs: {log_file})...", file=sys.stderr)
 
+    log_fd = open(log_file, "ab")
     popen_kwargs = {
-        "stdout": open(log_file, "ab"),
+        "stdout": log_fd,
         "stderr": subprocess.STDOUT,
         "stdin": subprocess.DEVNULL,
     }
@@ -924,9 +933,11 @@ def _ensure_proxy_running(timeout: float = 8.0) -> None:
     try:
         subprocess.Popen([sys.executable, "-m", "circuit_agent.proxy"], **popen_kwargs)
     except Exception as exc:
+        log_fd.close()
         print(f"Warning: failed to spawn circuit-proxy: {exc}", file=sys.stderr)
         print("Run 'circuit-proxy' manually in another terminal.", file=sys.stderr)
         return
+    log_fd.close()  # parent's copy; child has its own
 
     deadline = time.time() + timeout
     while time.time() < deadline:
