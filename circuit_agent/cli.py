@@ -20,7 +20,7 @@ from .config import (
     get_config_summary,
     load_credentials,
 )
-from prompt_toolkit import prompt as pt_prompt
+from prompt_toolkit import PromptSession
 from prompt_toolkit.application import Application
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.history import FileHistory
@@ -247,7 +247,12 @@ async def run_cli(working_dir: Optional[str] = None):
         if not client_id:
             client_id = input(f"  {C.CYAN}Client ID:{C.RESET} ").strip()
         if not client_secret:
-            client_secret = pt_prompt(f"  Client Secret: ", is_password=True).strip()
+            # PromptSession.prompt_async — sync pt_prompt() tries to start its
+            # own asyncio loop and conflicts with the one already running here.
+            secret_session = PromptSession()
+            client_secret = (
+                await secret_session.prompt_async("  Client Secret: ", is_password=True)
+            ).strip()
         if not app_key:
             app_key = input(f"  {C.CYAN}App Key:{C.RESET} ").strip()
         is_first_run = True
