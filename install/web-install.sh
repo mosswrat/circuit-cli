@@ -57,18 +57,45 @@ mkdir -p "$BIN_DIR"
 ln -sf "$VENV_DIR/bin/circuit-agent" "$BIN_DIR/circuit-agent"
 ln -sf "$VENV_DIR/bin/circuit-proxy" "$BIN_DIR/circuit-proxy"
 
+# --- ensure ~/.local/bin is on PATH ----------------------------------------
+# If the current shell's PATH already includes it, nothing to do. Otherwise
+# append `export PATH=...` to the user's shell rc (zsh, bash, or both if
+# present) — idempotent via a grep guard. Matches the auto-PATH behavior of
+# nvm, pyenv, rustup, and the Windows installer.
+PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
+PATCHED_FILES=""
+if ! echo ":$PATH:" | grep -q ":$BIN_DIR:"; then
+    for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.bash_profile"; do
+        if [ -f "$rc" ] || [ "$rc" = "$HOME/.zshrc" ]; then
+            touch "$rc"
+            if ! grep -qF "$PATH_LINE" "$rc" 2>/dev/null; then
+                {
+                    echo ""
+                    echo "# Added by circuit-cli installer ($(date +%Y-%m-%d))"
+                    echo "$PATH_LINE"
+                } >> "$rc"
+                PATCHED_FILES="$PATCHED_FILES $rc"
+            fi
+        fi
+    done
+fi
+
 # --- done ------------------------------------------------------------------
 echo
 echo "==> Installation complete."
 echo
-if ! echo ":$PATH:" | grep -q ":$BIN_DIR:"; then
-    echo "    NOTE: $BIN_DIR is not on your PATH. Add this to ~/.bashrc or ~/.zshrc:"
-    echo "        export PATH=\"\$HOME/.local/bin:\$PATH\""
+if [ -n "$PATCHED_FILES" ]; then
+    echo "    Added ~/.local/bin to PATH in:$PATCHED_FILES"
     echo
-    echo "    Then open a new shell and run:"
-else
+    echo "    Open a NEW terminal window, then run:"
+elif echo ":$PATH:" | grep -q ":$BIN_DIR:"; then
     echo "    Run:"
+else
+    echo "    ~/.local/bin already in your shell rc — open a new terminal, then run:"
 fi
 echo "        circuit-agent"
+echo
+echo "    Or run right now without opening a new terminal:"
+echo "        $VENV_DIR/bin/circuit-agent"
 echo
 echo "    On first run you'll be prompted for your Cisco CIRCUIT credentials."
