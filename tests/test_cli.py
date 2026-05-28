@@ -295,22 +295,143 @@ class TestEnsureProxyRunning:
         def url_fail(*args, **kwargs):
             raise urllib.error.URLError("connection refused")
 
-        # After spawn the function loops on _is_alive() until timeout. Keep
-        # urlopen failing throughout so we don't actually wait — but cap
-        # the timeout so the test stays fast. Patch time.sleep to no-op
-        # and time.time to advance fast.
+        # No polling loop in fire-and-forget mode, so no need to patch time.
         with patch("urllib.request.urlopen", side_effect=url_fail), \
-             patch("subprocess.Popen") as mock_popen, \
-             patch("time.sleep"), \
-             patch("time.time", side_effect=[0.0, 100.0, 200.0]):
+             patch("subprocess.Popen") as mock_popen:
             # Act
-            _ensure_proxy_running(timeout=0.01)
+            _ensure_proxy_running()
 
             # Assert — Popen was called once with our expected args
             assert mock_popen.call_count == 1
-            args, kwargs = mock_popen.call_args
+            args, _ = mock_popen.call_args
             assert args[0] == [sys.executable, "-m", "circuit_agent.proxy"]
 
         # The "Starting circuit-proxy" notice should have surfaced
         captured = capsys.readouterr()
         assert "Starting circuit-proxy" in captured.err
+
+        # And the spawn marker should be gone after a successful spawn
+        assert not (circuit_home / "proxy.spawning").exists()
+
+    def test_spawn_marker_blocks_concurrent_spawn(
+        self, monkeypatch, circuit_home, capsys
+    ):
+        # Arrange — health unreachable, but a fresh marker already exists
+        # (simulating another agent mid-spawn)
+        monkeypatch.delenv("CIRCUIT_AGENT_AUTO_PROXY", raising=False)
+        circuit_home.mkdir(parents=True, exist_ok=True)
+        marker = circuit_home / "proxy.spawning"
+        marker.touch()
+
+        def url_fail(*args, **kwargs):
+            raise urllib.error.URLError("connection refused")
+
+        with patch("urllib.request.urlopen", side_effect=url_fail), \
+             patch("subprocess.Popen") as mock_popen:
+            # Act
+            _ensure_proxy_running()
+
+            # Assert — no spawn because marker exists and is fresh
+            mock_popen.assert_not_called()
+
+        # Marker should still be there (we deferred to the other process)
+        assert marker.exists()
+
+    def test_stale_spawn_marker_is_reclaimed(
+        self, monkeypatch, circuit_home, capsys
+    ):
+        # Arrange — health unreachable, stale marker from a crashed spawner
+        monkeypatch.delenv("CIRCUIT_AGENT_AUTO_PROXY", raising=False)
+        circuit_home.mkdir(parents=True, exist_ok=True)
+        marker = circuit_home / "proxy.spawning"
+        marker.touch()
+        old_mtime = 1.0  # epoch — definitely > 30s ago
+        os.utime(marker, (old_mtime, old_mtime))
+
+        def url_fail(*args, **kwargs):
+            raise urllib.error.URLError("connection refused")
+
+        with patch("urllib.request.urlopen", side_effect=url_fail), \
+             patch("subprocess.Popen") as mock_popen:
+            # Act
+            _ensure_proxy_running()
+
+            # Assert — stale marker was reclaimed and the spawn proceeded
+            assert mock_popen.call_count == 1
+
+        # Cleaned up after successful spawn
+        assert not marker.exists()
+
+
+# ---------------------------------------------------------------------------
+# _upgrade_in_place
+# ---------------------------------------------------------------------------
+
+
+class TestUpgradeInPlace:
+    def test_returns_1_when_pip_missing(self, monkeypatch, tmp_path, capsys):
+        from circuit_agent.cli import _upgrade_in_place
+
+        # Arrange — point sys.executable somewhere that has no sibling pip
+        fake_python = tmp_path / "bin" / "python"
+        fake_python.parent.mkdir(parents=True)
+        fake_python.write_text("")
+        monkeypatch.setattr(sys, "executable", str(fake_python))
+
+        # Act
+        rc = _upgrade_in_place()
+
+        # Assert
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "cannot find pip" in captured.err
+
+    def test_runs_pip_with_expected_command(self, monkeypatch, tmp_path):
+        from circuit_agent.cli import REPO_GIT_URL, _upgrade_in_place
+
+        # Arrange — fake venv layout
+        venv_bin = tmp_path / "venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        fake_python = venv_bin / "python"
+        fake_pip = venv_bin / "pip"
+        fake_agent = venv_bin / "circuit-agent"
+        for p in (fake_python, fake_pip, fake_agent):
+            p.write_text("")
+        monkeypatch.setattr(sys, "executable", str(fake_python))
+
+        fake_run = MagicMock(return_value=MagicMock(returncode=0))
+        fake_check_output = MagicMock(return_value="Circuit Agent v5.99.0\n")
+
+        with patch("subprocess.run", fake_run), \
+             patch("subprocess.check_output", fake_check_output):
+            # Act
+            rc = _upgrade_in_place()
+
+        # Assert
+        assert rc == 0
+        cmd = fake_run.call_args[0][0]
+        assert cmd[0] == str(fake_pip)
+        assert "install" in cmd
+        assert "--upgrade" in cmd
+        assert "--force-reinstall" in cmd
+        assert "--no-cache-dir" in cmd  # load-bearing — pip caches git+ aggressively
+        assert REPO_GIT_URL in cmd
+
+    def test_propagates_nonzero_pip_exit(self, monkeypatch, tmp_path, capsys):
+        from circuit_agent.cli import _upgrade_in_place
+
+        # Arrange — fake venv with pip present
+        venv_bin = tmp_path / "venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        (venv_bin / "python").write_text("")
+        (venv_bin / "pip").write_text("")
+        monkeypatch.setattr(sys, "executable", str(venv_bin / "python"))
+
+        with patch("subprocess.run", return_value=MagicMock(returncode=42)):
+            # Act
+            rc = _upgrade_in_place()
+
+        # Assert
+        assert rc == 42
+        captured = capsys.readouterr()
+        assert "Upgrade failed" in captured.err

@@ -822,6 +822,7 @@ Examples:
     parser.add_argument("--version", "-v", action="store_true", help="Show version and exit")
     parser.add_argument(
         "--upgrade",
+        "--update",
         action="store_true",
         help="Pull the latest circuit-agent from GitHub into this venv, then exit",
     )
@@ -910,10 +911,21 @@ def write_env_file(client_id: str, client_secret: str, app_key: str, model: str 
     env_file = _env_file_path()
     config_dir = env_file.parent
     config_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(config_dir, 0o700)
-    except (OSError, NotImplementedError):
-        pass
+
+    if env_file.exists():
+        # Tell the user before we clobber their old creds — no backup is kept
+        # (we don't want stale secrets lying around) but silent replacement
+        # is surprising. The in-TUI flow lands here every successful auth.
+        print(f"note: overwriting existing {env_file}", file=sys.stderr)
+
+    # chmod is a no-op on Windows; skip the call instead of swallowing the
+    # NotImplementedError. On POSIX, an actual failure is security-relevant
+    # (creds left world-readable) and should be visible.
+    if sys.platform != "win32":
+        try:
+            os.chmod(config_dir, 0o700)
+        except OSError as exc:
+            print(f"Warning: could not set 0o700 on {config_dir}: {exc}", file=sys.stderr)
     body = (
         "# Cisco CIRCUIT API credentials — keep this file private\n"
         f"CIRCUIT_CLIENT_ID={client_id}\n"
@@ -922,20 +934,32 @@ def write_env_file(client_id: str, client_secret: str, app_key: str, model: str 
         f"CIRCUIT_MODEL={model}\n"
     )
     env_file.write_text(body)
-    try:
-        os.chmod(env_file, 0o600)
-    except (OSError, NotImplementedError):
-        pass
+    if sys.platform != "win32":
+        try:
+            os.chmod(env_file, 0o600)
+        except OSError as exc:
+            print(f"Warning: could not set 0o600 on {env_file}: {exc}", file=sys.stderr)
     return env_file
 
 
-def _ensure_proxy_running(timeout: float = 8.0) -> None:
+SPAWN_MARKER_TTL_SECS = 30
+
+
+def _ensure_proxy_running() -> None:
     """Make sure circuit-proxy is reachable on the configured host:port.
 
     Probes /health first so re-running the agent doesn't double-spawn.
-    If the proxy is down, launches it detached so it outlives this process —
-    that way subsequent agent invocations reuse the same proxy (and its
-    cached OAuth token). Skipped entirely if CIRCUIT_AGENT_AUTO_PROXY=0.
+    If the proxy is down, fires off a detached Popen and returns immediately
+    — the agent itself talks to Cisco directly, so we don't need to confirm
+    the proxy is alive before the user can use the TUI. The proxy logs to
+    ~/.circuit-agent/proxy.log if it fails to come up.
+
+    Concurrency: uses Path.touch(exist_ok=False) as an atomic marker to
+    prevent two simultaneous agent launches from both spawning a proxy
+    (the second would bind-fail on the port and die noisily). Marker is
+    auto-cleaned after Popen; stale markers older than 30s are reclaimed.
+
+    Skipped entirely if CIRCUIT_AGENT_AUTO_PROXY=0.
     """
     if os.environ.get("CIRCUIT_AGENT_AUTO_PROXY", "1").lower() in ("0", "false", "no"):
         return
@@ -963,6 +987,24 @@ def _ensure_proxy_running(timeout: float = 8.0) -> None:
     log_dir = Path(os.environ.get("CIRCUIT_AGENT_HOME") or (Path.home() / ".circuit-agent"))
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "proxy.log"
+    spawn_marker = log_dir / "proxy.spawning"
+
+    # Atomic claim — only one agent at a time wins the right to spawn.
+    try:
+        spawn_marker.touch(exist_ok=False)
+    except FileExistsError:
+        try:
+            age = time.time() - spawn_marker.stat().st_mtime
+        except OSError:
+            age = 0
+        if age < SPAWN_MARKER_TTL_SECS:
+            return  # another agent is mid-spawn; trust it to finish
+        # Marker is stale — previous spawner crashed before cleanup. Reclaim.
+        spawn_marker.unlink(missing_ok=True)
+        try:
+            spawn_marker.touch(exist_ok=False)
+        except FileExistsError:
+            return  # raced with yet another agent reclaiming; let them win
 
     print(f"Starting circuit-proxy in background (logs: {log_file})...", file=sys.stderr)
 
@@ -982,22 +1024,15 @@ def _ensure_proxy_running(timeout: float = 8.0) -> None:
         subprocess.Popen([sys.executable, "-m", "circuit_agent.proxy"], **popen_kwargs)
     except Exception as exc:
         log_fd.close()
+        spawn_marker.unlink(missing_ok=True)
         print(f"Warning: failed to spawn circuit-proxy: {exc}", file=sys.stderr)
         print("Run 'circuit-proxy' manually in another terminal.", file=sys.stderr)
         return
     log_fd.close()  # parent's copy; child has its own
-
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if _is_alive():
-            return
-        time.sleep(0.3)
-
-    print(
-        f"Warning: circuit-proxy didn't respond on {health_url} within {timeout}s. "
-        f"Check {log_file} or run 'circuit-proxy' manually.",
-        file=sys.stderr,
-    )
+    spawn_marker.unlink(missing_ok=True)
+    # Fire-and-forget: the agent talks to Cisco directly and doesn't need
+    # the proxy alive to function. If the proxy fails to bind, the user
+    # finds out from proxy.log or the next tool that tries to use it.
 
 
 def main():

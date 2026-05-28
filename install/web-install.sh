@@ -65,8 +65,17 @@ ln -sf "$VENV_DIR/bin/circuit-proxy" "$BIN_DIR/circuit-proxy"
 PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
 PATCHED_FILES=""
 if ! echo ":$PATH:" | grep -q ":$BIN_DIR:"; then
+    user_shell="${SHELL##*/}"
     for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.bash_profile"; do
-        if [ -f "$rc" ] || [ "$rc" = "$HOME/.zshrc" ]; then
+        # Touch a file if it already exists (preserve user setup), OR if it's
+        # the primary rc for the user's default shell. Creating a stray empty
+        # ~/.zshrc on bash-only Linux machines would be a regression.
+        is_primary_rc=false
+        case "$rc:$user_shell" in
+            "$HOME/.zshrc:zsh")   is_primary_rc=true ;;
+            "$HOME/.bashrc:bash") is_primary_rc=true ;;
+        esac
+        if [ -f "$rc" ] || [ "$is_primary_rc" = true ]; then
             touch "$rc"
             if ! grep -qF "$PATH_LINE" "$rc" 2>/dev/null; then
                 {
