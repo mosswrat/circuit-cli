@@ -19,7 +19,16 @@ Previous (v4.0):
 - Headless/CI mode support
 """
 
-__version__ = "5.0.0-alpha"
+# Read version from the installed package metadata so we never drift
+# between this string and pyproject.toml. Falls back to a dev marker if
+# the package isn't installed (running from a source checkout).
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
+
+try:
+    __version__ = _pkg_version("circuit-agent")
+except PackageNotFoundError:
+    __version__ = "0.0.0-dev"
+
 __author__ = "Circuit Agent"
 
 from .agent import CircuitAgent
